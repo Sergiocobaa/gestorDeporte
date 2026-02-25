@@ -3,21 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>OmniForge | Precision Performance</title>
+    <title>OmniForge | Recovery Mode</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; -webkit-tap-highlight-color: transparent; }
-        .glass { background: rgba(18, 18, 20, 0.85); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .glass { background: rgba(18, 18, 20, 0.9); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
         .neo-card { border-radius: 2.5rem; }
-        .font-mono { font-family: 'JetBrains Mono', monospace; }
-        @keyframes pulse-emerald { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.1); } }
-        .animate-status { animation: pulse-emerald 2s infinite; }
-        .hide-scroll::-webkit-scrollbar { display: none; }
+        .strava-orange { background-color: #FC4C02; }
     </style>
 </head>
 <body>
@@ -28,9 +25,8 @@
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useCallback } = React;
 
-        // --- CREDENCIALES VERIFICADAS ---
         const CONFIG = {
             firebase: {
                 apiKey: "AIzaSyDCGa57RlWlZTvKBGmAL5NbjCfl4tKHbcw",
@@ -41,10 +37,8 @@
                 appId: "1:774570456776:web:b0e1d2df541e0207aa97fd"
             },
             strava: {
-                clientId: "205740", // Actualizado según tu captura
-                clientSecret: "b6c84aa920c3173ceacd33b568b85c99b7c07bb7",
-                initialAccessToken: "06ee57d24b4323ae084f327d3760e683d7d02cfe",
-                initialRefreshToken: "1b149145afe921f17b74d81d0ff00f42b64cc217"
+                clientId: "205740",
+                clientSecret: "b6c84aa920c3173ceacd33b568b85c99b7c07bb7"
             }
         };
 
@@ -62,44 +56,40 @@
             const [history, setHistory] = useState([]);
             const [status, setStatus] = useState(null);
             const [isSyncing, setIsSyncing] = useState(false);
-            const [activeTab, setActiveTab] = useState('hub');
+            const [errorCount, setErrorCount] = useState(0);
 
-            // Persistencia de tokens en navegador
-            const [tokens, setTokens] = useState(() => {
+            const [session, setSession] = useState(() => {
                 const saved = localStorage.getItem('strava_session');
-                return saved ? JSON.parse(saved) : { 
-                    access_token: CONFIG.strava.initialAccessToken, 
-                    refresh_token: CONFIG.strava.initialRefreshToken 
-                };
+                return saved ? JSON.parse(saved) : null;
             });
 
             useEffect(() => {
                 signInAnonymously(auth);
                 const unsubAuth = onAuthStateChanged(auth, setUser);
                 
-                // Detectar si volvemos de una redirección de Strava
                 const urlParams = new URLSearchParams(window.location.search);
                 const code = urlParams.get('code');
-                if (code) exchangeCode(code);
+                if (code) exchangeOAuthCode(code);
 
                 return () => unsubAuth();
             }, []);
 
             useEffect(() => {
                 if (!user) return;
+                // REGLA 1: Path estricto
                 const path = collection(db, "artifacts", "gestordeportes-36ba3", "users", user.uid, "history");
-                return onSnapshot(path, (snapshot) => {
-                    const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                return onSnapshot(path, (snap) => {
+                    const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setHistory(data.sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
                 });
             }, [user]);
 
             const showStatus = (msg) => {
                 setStatus(msg);
-                setTimeout(() => setStatus(null), 5000);
+                setTimeout(() => setStatus(null), 6000);
             };
 
-            const exchangeCode = async (code) => {
+            const exchangeOAuthCode = async (code) => {
                 setIsSyncing(true);
                 try {
                     const res = await fetch('https://www.strava.com/oauth/token', {
@@ -114,15 +104,17 @@
                     });
                     const data = await res.json();
                     if (data.access_token) {
-                        saveNewTokens(data);
-                        showStatus("Conexión Strava Autorizada");
+                        localStorage.setItem('strava_session', JSON.stringify(data));
+                        setSession(data);
+                        showStatus("✅ Conexión establecida. Ya puedes sincronizar.");
                         window.history.replaceState({}, document.title, window.location.pathname);
                     }
-                } catch (e) { showStatus("Error en intercambio OAuth"); }
+                } catch (e) { showStatus("❌ Error en el intercambio de tokens."); }
                 finally { setIsSyncing(false); }
             };
 
-            const refreshTokens = async () => {
+            const refreshStravaToken = async () => {
+                if (!session?.refresh_token) return null;
                 try {
                     const res = await fetch('https://www.strava.com/oauth/token', {
                         method: 'POST',
@@ -130,46 +122,66 @@
                         body: JSON.stringify({
                             client_id: CONFIG.strava.clientId,
                             client_secret: CONFIG.strava.clientSecret,
-                            refresh_token: tokens.refresh_token,
+                            refresh_token: session.refresh_token,
                             grant_type: 'refresh_token'
                         })
                     });
                     const data = await res.json();
                     if (data.access_token) {
-                        saveNewTokens(data);
+                        const newSession = { ...session, access_token: data.access_token, refresh_token: data.refresh_token };
+                        localStorage.setItem('strava_session', JSON.stringify(newSession));
+                        setSession(newSession);
                         return data.access_token;
                     }
-                } catch (e) { console.error(e); }
+                } catch (e) { console.error("Refresh failed", e); }
                 return null;
             };
 
-            const saveNewTokens = (data) => {
-                const newSession = { access_token: data.access_token, refresh_token: data.refresh_token };
-                setTokens(newSession);
-                localStorage.setItem('strava_session', JSON.stringify(newSession));
-            };
+            const syncData = async () => {
+                if (!user || isSyncing) return;
+                
+                // Anti-spam para evitar 429
+                if (errorCount > 2) {
+                    showStatus("⚠️ Demasiados errores. Espera 15 min o usa 'Re-vincular'.");
+                    return;
+                }
 
-            const syncWorkouts = async (tokenOverride = null) => {
-                if (!user) return;
                 setIsSyncing(true);
-                const currentToken = tokenOverride || tokens.access_token;
+                showStatus("⏳ Consultando Apple Watch Cloud...");
 
                 try {
-                    const res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=10', {
+                    let currentToken = session?.access_token;
+                    if (!currentToken) throw new Error("No token");
+
+                    let res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=10', {
                         headers: { 'Authorization': `Bearer ${currentToken}` }
                     });
 
                     if (res.status === 401) {
-                        showStatus("Refrescando sesión...");
-                        const newToken = await refreshTokens();
-                        if (newToken) return syncWorkouts(newToken);
-                        throw new Error("Relink needed");
+                        const newToken = await refreshStravaToken();
+                        if (!newToken) {
+                            showStatus("❌ Sesión expirada. Usa 'Re-vincular'.");
+                            setErrorCount(prev => prev + 1);
+                            setIsSyncing(false);
+                            return;
+                        }
+                        // Reintento único con el nuevo token
+                        res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=10', {
+                            headers: { 'Authorization': `Bearer ${newToken}` }
+                        });
+                    }
+
+                    if (res.status === 429) {
+                        showStatus("🚨 Límite de Strava alcanzado. Espera 15 minutos.");
+                        setErrorCount(5);
+                        setIsSyncing(false);
+                        return;
                     }
 
                     const data = await res.json();
-                    if (!Array.isArray(data)) throw new Error("API Limit reached");
+                    if (!Array.isArray(data)) throw new Error("Invalid response");
 
-                    let newItems = 0;
+                    let added = 0;
                     for (const act of data) {
                         if (!history.find(h => h.stravaId === act.id)) {
                             await addDoc(collection(db, "artifacts", "gestordeportes-36ba3", "users", user.uid, "history"), {
@@ -181,144 +193,101 @@
                                 timestamp: serverTimestamp(),
                                 source: 'Apple Watch'
                             });
-                            newItems++;
+                            added++;
                         }
                     }
-                    showStatus(newItems > 0 ? `Importadas ${newItems} sesiones` : "Timeline al día");
+                    setErrorCount(0);
+                    showStatus(added > 0 ? `🔥 ${added} nuevas actividades sincronizadas!` : "✅ Todo al día.");
                 } catch (e) {
-                    showStatus("Alcance insuficiente o error de API");
+                    console.error(e);
+                    setErrorCount(prev => prev + 1);
+                    showStatus("❌ Error de conexión con Strava.");
                 } finally {
                     setIsSyncing(false);
                 }
             };
 
-            const linkAccount = () => {
+            const reLink = () => {
                 const redirect = window.location.href.split('?')[0];
+                // IMPORTANTE: scope incluye activity:read_all para evitar 401
                 window.location.href = `https://www.strava.com/oauth/authorize?client_id=${CONFIG.strava.clientId}&response_type=code&redirect_uri=${redirect}&approval_prompt=force&scope=read,activity:read_all`;
             };
 
             return (
-                <div className="max-w-md mx-auto min-h-screen bg-black text-white relative flex flex-col hide-scroll">
+                <div className="max-w-md mx-auto min-h-screen bg-black text-white selection:bg-orange-500/30">
                     {status && (
-                        <div className="fixed top-10 left-6 right-6 z-[100] glass p-4 rounded-3xl border-blue-500/30 text-center animate-in fade-in slide-in-from-top-4">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-blue-400">{status}</p>
+                        <div className="fixed top-10 left-6 right-6 z-[100] glass p-5 rounded-3xl border-white/10 text-center animate-in fade-in slide-in-from-top-4 shadow-2xl">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-orange-500">{status}</p>
                         </div>
                     )}
 
-                    <header className="p-8 border-b border-white/5 flex justify-between items-end sticky top-0 bg-black/95 backdrop-blur-xl z-50">
-                        <div>
-                            <h1 className="text-3xl font-black italic tracking-tighter uppercase leading-none">Omni<span className="text-blue-500">Forge</span></h1>
-                            <p className="text-[8px] text-zinc-600 font-black tracking-[0.4em] uppercase mt-1">High Intensity Lab</p>
-                        </div>
-                        <div className="flex flex-col items-end">
-                            <div className="flex items-center gap-1.5">
-                                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-status"></div>
-                                <span className="text-[9px] font-black text-emerald-500 uppercase">Engine Active</span>
-                            </div>
+                    <header className="p-8 border-b border-white/5 sticky top-0 bg-black/90 backdrop-blur-xl z-50 flex justify-between items-center">
+                        <h1 className="text-2xl font-black italic tracking-tighter uppercase">Omni<span className="text-orange-500">Forge</span></h1>
+                        <div className="flex items-center gap-2">
+                            <span className="text-[8px] font-black text-zinc-500 uppercase">Vercel Node</span>
+                            <div className={`w-2 h-2 rounded-full ${user ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
                         </div>
                     </header>
 
-                    <main className="flex-1 p-6 space-y-8 overflow-y-auto pb-32">
-                        {/* Integration Card */}
-                        <section className="glass p-8 rounded-[2.5rem] border-orange-500/20 shadow-2xl relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                                <Icon name="watch" size={80} />
-                            </div>
-                            <div className="relative z-10">
-                                <h3 className="text-xs font-black uppercase text-zinc-500 tracking-widest mb-4">Apple Watch Core</h3>
-                                <div className="flex items-center gap-4 mb-8">
-                                    <div className="p-4 bg-[#FC4C02] rounded-2xl shadow-lg text-white">
-                                        <Icon name="zap" size={24} />
-                                    </div>
-                                    <div>
-                                        <p className="text-lg font-black italic uppercase italic tracking-tight leading-none">Strava Bridge</p>
-                                        <p className="text-[9px] text-zinc-500 font-bold uppercase mt-1">Sync status: Connected</p>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <button 
-                                        onClick={() => syncWorkouts()}
-                                        disabled={isSyncing}
-                                        className="py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
-                                    >
-                                        {isSyncing ? <Icon name="rotate-cw" className="animate-spin" /> : <Icon name="refresh-cw" />}
-                                        Sync
-                                    </button>
-                                    <button 
-                                        onClick={linkAccount}
-                                        className="py-4 bg-zinc-800 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95"
-                                    >
-                                        <Icon name="link" />
-                                        Relink
-                                    </button>
-                                </div>
+                    <main className="p-6 space-y-8 pb-32">
+                        {/* Status Card */}
+                        <section className="glass p-8 rounded-[2.5rem] border-white/5 shadow-2xl">
+                            <h3 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-6 italic">Control de Datos</h3>
+                            
+                            <div className="space-y-4">
+                                <button 
+                                    onClick={syncData}
+                                    disabled={isSyncing}
+                                    className="w-full py-5 bg-white text-black rounded-3xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 disabled:opacity-30 transition-all"
+                                >
+                                    {isSyncing ? <Icon name="rotate-cw" className="animate-spin" /> : <Icon name="refresh-cw" />}
+                                    Sincronizar Watch
+                                </button>
+                                
+                                <button 
+                                    onClick={reLink}
+                                    className="w-full py-4 bg-zinc-900 text-zinc-400 rounded-3xl font-black text-[10px] uppercase tracking-widest border border-white/5 hover:text-white transition-colors"
+                                >
+                                    Re-vincular Cuenta (OAUTH)
+                                </button>
                             </div>
                         </section>
 
-                        {/* Stats Summary */}
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="glass p-6 rounded-[2rem]">
-                                <Icon name="flame" className="text-orange-500 mb-2" size={18} />
-                                <p className="text-3xl font-black italic tracking-tighter leading-none">
-                                    {history.filter(h => h.type === 'Run').length}
-                                </p>
-                                <p className="text-[8px] text-zinc-600 font-black uppercase mt-1">Runs Logged</p>
-                            </div>
-                            <div className="glass p-6 rounded-[2rem]">
-                                <Icon name="dumbbell" className="text-blue-500 mb-2" size={18} />
-                                <p className="text-3xl font-black italic tracking-tighter leading-none">
-                                    {history.filter(h => h.type === 'Gym').length}
-                                </p>
-                                <p className="text-[8px] text-zinc-600 font-black uppercase mt-1">Gym Sessions</p>
-                            </div>
-                        </div>
-
-                        {/* History Timeline */}
+                        {/* History */}
                         <section className="space-y-4">
-                            <h3 className="text-[10px] font-black uppercase text-zinc-700 tracking-[0.3em] italic px-2">Timeline</h3>
-                            <div className="space-y-3">
-                                {history.length === 0 ? (
-                                    <div className="p-16 text-center border-2 border-dashed border-zinc-900 rounded-[2.5rem]">
-                                        <p className="text-[9px] font-black uppercase text-zinc-800 tracking-widest italic">No Data Stream Detected</p>
-                                    </div>
-                                ) : (
-                                    history.map((w) => (
-                                        <div key={w.id} className="glass p-5 rounded-[2.1rem] flex items-center justify-between border-white/5 hover:border-blue-500/30 transition-all">
-                                            <div className="flex items-center gap-5">
-                                                <div className={`p-4 rounded-2xl ${w.type === 'Gym' ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400'}`}>
-                                                    <Icon name={w.type === 'Gym' ? 'dumbbell' : 'zap'} size={22} />
-                                                </div>
-                                                <div>
-                                                    <p className="font-black italic uppercase text-sm tracking-tighter">{w.name}</p>
-                                                    <p className="text-[9px] font-bold text-zinc-600 uppercase mt-0.5">
-                                                        {w.timestamp?.seconds ? new Date(w.timestamp.seconds * 1000).toLocaleDateString() : 'Syncing'}
-                                                    </p>
-                                                    {w.distance && (
-                                                        <p className="text-[10px] font-black text-blue-500 mt-1 italic uppercase tracking-tighter">
-                                                            {w.distance} KM • {w.duration} MIN
-                                                        </p>
-                                                    )}
-                                                </div>
+                            <h3 className="text-[10px] font-black uppercase text-zinc-700 tracking-[0.4em] italic px-2">Historial Unificado</h3>
+                            {history.length === 0 ? (
+                                <div className="p-20 text-center border-2 border-dashed border-zinc-900 rounded-[3rem]">
+                                    <Icon name="database" size={32} className="mx-auto mb-4 opacity-10" />
+                                    <p className="text-[9px] font-black text-zinc-800 uppercase tracking-widest">Base de Datos Vacía</p>
+                                </div>
+                            ) : (
+                                history.map((w) => (
+                                    <div key={w.id} className="glass p-5 rounded-[2.2rem] flex items-center justify-between border-transparent hover:border-orange-500/20 transition-all">
+                                        <div className="flex items-center gap-5">
+                                            <div className="p-4 bg-orange-500/10 rounded-2xl text-orange-500">
+                                                <Icon name={w.type === 'Run' ? 'zap' : 'activity'} size={22} />
                                             </div>
-                                            <Icon name="check-circle-2" size={14} className="text-zinc-800" />
+                                            <div>
+                                                <p className="font-black italic uppercase text-sm tracking-tighter leading-none mb-1">{w.name}</p>
+                                                <p className="text-[9px] font-bold text-zinc-600 uppercase">
+                                                    {w.distance ? `${w.distance} KM • ` : ''} {w.duration} MIN
+                                                </p>
+                                            </div>
                                         </div>
-                                    ))
-                                )}
-                            </div>
+                                    </div>
+                                ))
+                            )}
                         </section>
                     </main>
 
-                    {/* Navbar */}
+                    {/* Footer Nav */}
                     <nav className="fixed bottom-10 left-8 right-8 z-50">
                         <div className="glass rounded-[3rem] p-2 flex justify-around shadow-2xl border-white/10">
-                            {['hub', 'gym', 'data'].map((tab) => (
-                                <button 
-                                    key={tab}
-                                    onClick={() => setActiveTab(tab)}
-                                    className={`flex-1 py-5 rounded-[2.5rem] flex flex-col items-center transition-all duration-300 ${activeTab === tab ? 'bg-white text-black scale-105' : 'text-zinc-500 hover:text-white'}`}
-                                >
-                                    <Icon name={tab === 'hub' ? 'activity' : tab === 'gym' ? 'dumbbell' : 'bar-chart-3'} />
-                                    <span className="text-[7px] font-black uppercase mt-1.5 tracking-widest">{tab}</span>
+                            {['hub', 'gym', 'stats'].map((t) => (
+                                <button key={t} className="flex-1 py-4 flex flex-col items-center text-zinc-600 hover:text-white transition-colors">
+                                    <Icon name={t === 'hub' ? 'activity' : t === 'gym' ? 'dumbbell' : 'bar-chart-3'} />
+                                    <span className="text-[7px] font-black uppercase mt-1 tracking-widest">{t}</span>
                                 </button>
                             ))}
                         </div>
@@ -327,8 +296,8 @@
             );
         };
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<App />);
     </script>
 </body>
 </html>
