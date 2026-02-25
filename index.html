@@ -81,6 +81,8 @@
             // Estados para Calendario y Detalles
             const [selectedDate, setSelectedDate] = useState(null);
             const [selectedActivity, setSelectedActivity] = useState(null);
+            // Añadido control de mes para el calendario
+            const [calendarMonth, setCalendarMonth] = useState(new Date());
 
             const [session, setSession] = useState(() => {
                 const saved = localStorage.getItem('strava_session');
@@ -114,7 +116,7 @@
 
             const showStatus = (msg) => {
                 setStatus(msg);
-                setTimeout(() => setStatus(null), 5000);
+                setTimeout(() => setStatus(null), 6000);
             };
 
             const exchangeOAuthCode = async (code) => {
@@ -134,7 +136,7 @@
                     if (data.access_token) {
                         localStorage.setItem('strava_session', JSON.stringify(data));
                         setSession(data);
-                        showStatus("✅ Conexión establecida. Sincronizando...");
+                        showStatus("✅ Autenticación validada. Sincronizando...");
                         window.history.replaceState({}, document.title, window.location.pathname);
                         syncWatch(data.access_token); 
                     }
@@ -168,6 +170,7 @@
 
             const linkAccount = () => {
                 const redirect = window.location.href.split('?')[0];
+                // Forzamos la solicitud explícita de lectura de datos privados (activity:read_all)
                 window.location.href = `https://www.strava.com/oauth/authorize?client_id=${CONFIG.strava.clientId}&response_type=code&redirect_uri=${redirect}&approval_prompt=force&scope=read,activity:read_all`;
             };
 
@@ -179,31 +182,30 @@
                 }
 
                 if (errorCount > 2) {
-                    showStatus("⚠️ Límite de errores. Espera 15 min o re-vincula.");
+                    showStatus("⚠️ Demasiados intentos. Espera 15 min o usa el botón Re-vincular.");
                     return;
                 }
 
                 setIsSyncing(true);
-                showStatus("⏳ Extrayendo 50 últimas actividades...");
+                showStatus("⏳ Solicitando 100 últimas actividades..."); // Aumentado a 100
 
                 try {
                     let currentToken = tokenOverride || session.access_token;
-                    // Aumentamos a 50 para capturar más historial real
-                    let res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=50', {
+                    let res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=100', {
                         headers: { 'Authorization': `Bearer ${currentToken}` }
                     });
 
                     if (res.status === 401) {
                         const newToken = await refreshStravaToken();
                         if (!newToken) {
-                            showStatus("❌ Sesión expirada. Por favor, re-vincula.");
+                            showStatus("❌ Sesión expirada. Por favor, pulsa en el botón de la cadena para re-vincular.");
                             setSession(null);
                             localStorage.removeItem('strava_session');
                             setErrorCount(prev => prev + 1);
                             setIsSyncing(false);
                             return;
                         }
-                        res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=50', {
+                        res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=100', {
                             headers: { 'Authorization': `Bearer ${newToken}` }
                         });
                     }
@@ -214,20 +216,20 @@
                         throw new Error("SCOPE_INSUFFICIENT");
                     }
                     if (res.status === 429) {
-                        showStatus("🚨 Límite de Strava alcanzado. Espera 15 min.");
+                        showStatus("🚨 Límite de la API de Strava alcanzado. Vuelve en 15 minutos.");
                         setErrorCount(5);
                         setIsSyncing(false);
                         return;
                     }
 
                     const data = await res.json();
-                    if (!Array.isArray(data)) throw new Error(data.message || "Invalid format");
+                    if (!Array.isArray(data)) throw new Error(data.message || "Formato de datos no válido");
 
                     let added = 0;
                     for (const act of data) {
                         if (!history.find(h => h.stravaId === act.id)) {
                             
-                            // Cálculos avanzados
+                            // Cálculos avanzados de ritmo para carreras/caminatas
                             let paceStr = null;
                             if (act.average_speed > 0 && ['Run', 'Walk'].includes(act.type)) {
                                 const paceSecs = 1000 / act.average_speed;
@@ -243,7 +245,7 @@
                                 distance: (act.distance / 1000).toFixed(2), // km
                                 duration: Math.floor(act.moving_time / 60), // min
                                 calories: act.kilojoules ? Math.floor(act.kilojoules * 0.239) : 0,
-                                startDate: act.start_date_local, // Fecha real del entreno
+                                startDate: act.start_date_local, // Fecha real del entreno local
                                 heartrate: Math.round(act.average_heartrate || 0),
                                 elevation: Math.round(act.total_elevation_gain || 0),
                                 pace: paceStr,
@@ -254,13 +256,13 @@
                         }
                     }
                     setErrorCount(0);
-                    showStatus(added > 0 ? `🔥 ${added} nuevas actividades importadas!` : "✅ Timeline sincronizado.");
+                    showStatus(added > 0 ? `🔥 ${added} nuevas actividades extraídas (incluidas pasadas)!` : "✅ Base de datos al día con Strava.");
                 } catch (e) {
                     setErrorCount(prev => prev + 1);
                     if (e.message === "SCOPE_INSUFFICIENT") {
-                        showStatus("❌ Permisos denegados. MARCA la casilla de actividades al vincular.");
+                        showStatus("❌ Strava bloqueó el acceso. MARCA la casilla 'Ver datos de actividades privadas' al vincular.");
                     } else {
-                        showStatus("❌ Fallo en la conexión con Strava.");
+                        showStatus("❌ Error de comunicación con los servidores de Strava.");
                     }
                 } finally {
                     setIsSyncing(false);
@@ -295,10 +297,10 @@
                             <Icon name="zap" size={120} />
                         </div>
                         <div className="relative z-10">
-                            <h3 className="text-[10px] font-black uppercase text-zinc-500 tracking-widest italic mb-6">Carga Semanal Acumulada</h3>
+                            <h3 className="text-[10px] font-black uppercase text-zinc-500 tracking-widest italic mb-6">Carga Histórica Total</h3>
                             <div className="flex items-end gap-2 mb-2">
                                 <span className="text-6xl font-black italic tracking-tighter leading-none">{stats.totalKms}</span>
-                                <span className="text-sm font-bold text-blue-500 uppercase tracking-widest pb-1">Kms Totales</span>
+                                <span className="text-sm font-bold text-blue-500 uppercase tracking-widest pb-1">Kms</span>
                             </div>
                             <div className="w-full bg-white/5 h-2 rounded-full overflow-hidden mt-4">
                                 <div className="bg-blue-600 h-full w-[70%]" style={{boxShadow: '0 0 15px #3b82f6'}}></div>
@@ -310,12 +312,12 @@
                         <div className="glass p-6 rounded-[2rem] border-orange-500/20">
                             <Icon name="flame" className="text-orange-500 mb-3" />
                             <p className="text-3xl font-black italic tracking-tighter leading-none">{stats.cardioSessions}</p>
-                            <p className="text-[9px] text-zinc-500 font-black uppercase mt-2">Cardio (Watch)</p>
+                            <p className="text-[9px] text-zinc-500 font-black uppercase mt-2">Cardio (Total)</p>
                         </div>
                         <div className="glass p-6 rounded-[2rem] border-purple-500/20">
                             <Icon name="dumbbell" className="text-purple-500 mb-3" />
                             <p className="text-3xl font-black italic tracking-tighter leading-none">{stats.gymSessions}</p>
-                            <p className="text-[9px] text-zinc-500 font-black uppercase mt-2">Fuerza (Watch)</p>
+                            <p className="text-[9px] text-zinc-500 font-black uppercase mt-2">Fuerza (Total)</p>
                         </div>
                     </div>
 
@@ -346,48 +348,60 @@
             );
 
             const renderActivities = () => {
-                // Lógica de Calendario Simple
-                const today = new Date();
-                const monthDays = Array.from({length: new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()}, (_, i) => i + 1);
+                // Calendario ajustado para navegar entre meses
+                const monthDays = Array.from({length: new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate()}, (_, i) => i + 1);
                 
+                const prevMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
+                const nextMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
+
                 const getActivitiesForDay = (day) => {
                     return history.filter(h => {
                         if(!h.startDate) return false;
                         const d = new Date(h.startDate);
-                        return d.getDate() === day && d.getMonth() === today.getMonth();
+                        return d.getDate() === day && d.getMonth() === calendarMonth.getMonth() && d.getFullYear() === calendarMonth.getFullYear();
                     });
                 };
 
                 const filteredHistory = selectedDate 
-                    ? history.filter(h => h.startDate && new Date(h.startDate).getDate() === selectedDate && new Date(h.startDate).getMonth() === today.getMonth())
-                    : history;
+                    ? history.filter(h => h.startDate && new Date(h.startDate).getDate() === selectedDate && new Date(h.startDate).getMonth() === calendarMonth.getMonth())
+                    : history.filter(h => h.startDate && new Date(h.startDate).getMonth() === calendarMonth.getMonth() && new Date(h.startDate).getFullYear() === calendarMonth.getFullYear());
 
                 return (
                     <div className="space-y-6 animate-slide">
                         <div className="px-2 flex justify-between items-end">
                             <div>
                                 <h2 className="text-3xl font-black italic tracking-tighter uppercase">Explorador</h2>
-                                <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{today.toLocaleDateString('es-ES', {month: 'long', year: 'numeric'})}</p>
+                                <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
+                                    Base de datos inteligente
+                                </p>
                             </div>
-                            {selectedDate && (
-                                <button onClick={() => setSelectedDate(null)} className="text-[9px] font-black text-blue-500 uppercase">Ver Todo</button>
-                            )}
                         </div>
 
-                        {/* Calendario Mensual */}
-                        <div className="glass p-5 rounded-[2rem] border-white/5">
+                        {/* Controles de Calendario */}
+                        <div className="glass p-5 rounded-[2rem] border-white/5 space-y-4">
+                            <div className="flex justify-between items-center px-2">
+                                <button onClick={prevMonth} className="text-zinc-500 hover:text-white"><Icon name="chevron-left" size={18}/></button>
+                                <span className="font-black text-sm uppercase tracking-widest text-blue-400">
+                                    {calendarMonth.toLocaleDateString('es-ES', {month: 'long', year: 'numeric'})}
+                                </span>
+                                <button onClick={nextMonth} className="text-zinc-500 hover:text-white"><Icon name="chevron-right" size={18}/></button>
+                            </div>
+                            
                             <div className="grid grid-cols-7 gap-2 text-center">
                                 {['L','M','X','J','V','S','D'].map(d => <div key={d} className="text-[8px] font-black text-zinc-600">{d}</div>)}
                                 {monthDays.map(day => {
-                                    const hasActivity = getActivitiesForDay(day).length > 0;
+                                    const acts = getActivitiesForDay(day);
+                                    const hasActivity = acts.length > 0;
                                     const isSelected = selectedDate === day;
+                                    const isGym = acts.some(a => !isCardio(a.type));
+                                    
                                     return (
                                         <button 
                                             key={day}
                                             onClick={() => setSelectedDate(isSelected ? null : day)}
                                             className={`aspect-square rounded-full flex items-center justify-center text-xs font-bold transition-all ${
                                                 isSelected ? 'bg-white text-black scale-110' : 
-                                                hasActivity ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-zinc-600 hover:bg-white/5'
+                                                hasActivity ? (isGym ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30') : 'text-zinc-700 hover:bg-white/5'
                                             }`}
                                         >
                                             {day}
@@ -395,17 +409,22 @@
                                     );
                                 })}
                             </div>
+                            {selectedDate && (
+                                <button onClick={() => setSelectedDate(null)} className="w-full py-2 text-[9px] font-black text-zinc-500 uppercase hover:text-white transition-colors">
+                                    Limpiar Filtro (Ver todo el mes)
+                                </button>
+                            )}
                         </div>
 
                         <div className="space-y-3 pb-6">
                             {filteredHistory.length === 0 ? (
-                                <div className="p-10 text-center text-zinc-600 text-xs italic">No hay registros para este filtro.</div>
+                                <div className="p-10 text-center text-zinc-600 text-xs italic">No hay registros para las fechas seleccionadas.</div>
                             ) : (
                                 filteredHistory.map((w) => (
-                                    <div key={w.id} onClick={() => setSelectedActivity(w)} className="glass p-6 rounded-[2.5rem] border-white/5 space-y-4 cursor-pointer hover:border-blue-500/30 transition-all">
+                                    <div key={w.id} onClick={() => setSelectedActivity(w)} className="glass p-6 rounded-[2.5rem] border-white/5 space-y-4 cursor-pointer hover:border-white/20 transition-all">
                                         <div className="flex justify-between items-start">
                                             <div className="flex gap-4 items-center">
-                                                <div className="p-3 bg-white/5 rounded-2xl text-blue-400">
+                                                <div className={`p-3 bg-white/5 rounded-2xl ${!isCardio(w.type) ? 'text-purple-400' : 'text-blue-400'}`}>
                                                     <Icon name={!isCardio(w.type) ? 'dumbbell' : 'zap'} size={20} />
                                                 </div>
                                                 <div>
@@ -470,23 +489,25 @@
             const renderModal = () => {
                 if (!selectedActivity) return null;
                 const w = selectedActivity;
+                const isGym = !isCardio(w.type);
+                
                 return (
-                    <div className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-md p-6 flex flex-col justify-end pb-32 animate-in fade-in duration-300">
+                    <div className="fixed inset-0 z-[200] bg-black/95 backdrop-blur-xl p-6 flex flex-col justify-end pb-32 animate-in fade-in duration-300">
                         <div className="glass p-8 rounded-[3rem] border-white/10 w-full max-w-md mx-auto relative shadow-2xl">
                             <button 
                                 onClick={() => setSelectedActivity(null)}
-                                className="absolute top-6 right-6 p-2 bg-white/10 rounded-full hover:bg-white/20"
+                                className="absolute top-6 right-6 p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors"
                             >
                                 <Icon name="x" size={18} />
                             </button>
                             
                             <div className="flex items-center gap-4 mb-8">
-                                <div className="p-4 bg-blue-500/20 text-blue-500 rounded-3xl">
-                                    <Icon name={!isCardio(w.type) ? 'dumbbell' : 'zap'} size={32} />
+                                <div className={`p-4 rounded-3xl ${isGym ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-500'}`}>
+                                    <Icon name={isGym ? 'dumbbell' : 'zap'} size={32} />
                                 </div>
                                 <div>
-                                    <h2 className="text-xl font-black italic uppercase leading-tight">{w.name}</h2>
-                                    <p className="text-[10px] text-zinc-400 font-bold uppercase">{formatDate(w.startDate)}</p>
+                                    <h2 className="text-xl font-black italic uppercase leading-tight pr-8">{w.name}</h2>
+                                    <p className="text-[10px] text-zinc-400 font-bold uppercase mt-1">{formatDate(w.startDate)}</p>
                                 </div>
                             </div>
 
@@ -496,27 +517,33 @@
                                     <p className="text-2xl font-black italic font-mono leading-none">{w.duration}</p>
                                     <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">Minutos</p>
                                 </div>
-                                <div className="bg-black/50 p-5 rounded-3xl border border-white/5">
-                                    <Icon name="map-pin" size={16} className="text-blue-500 mb-2" />
-                                    <p className="text-2xl font-black italic font-mono text-blue-400 leading-none">{w.distance || '0'}</p>
-                                    <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">Kilómetros</p>
-                                </div>
+                                {!isGym && (
+                                    <div className="bg-black/50 p-5 rounded-3xl border border-white/5">
+                                        <Icon name="map-pin" size={16} className="text-blue-500 mb-2" />
+                                        <p className="text-2xl font-black italic font-mono text-blue-400 leading-none">{w.distance || '0'}</p>
+                                        <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">Kilómetros</p>
+                                    </div>
+                                )}
                                 <div className="bg-black/50 p-5 rounded-3xl border border-white/5">
                                     <Icon name="heart" size={16} className="text-red-500 mb-2" />
                                     <p className="text-2xl font-black italic font-mono text-red-400 leading-none">{w.heartrate || '--'}</p>
                                     <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">BPM Medio</p>
                                 </div>
-                                <div className="bg-black/50 p-5 rounded-3xl border border-white/5">
-                                    <Icon name="zap" size={16} className="text-orange-500 mb-2" />
-                                    <p className="text-2xl font-black italic font-mono text-orange-400 leading-none">{w.pace || '--'}</p>
-                                    <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">Ritmo (Min/Km)</p>
-                                </div>
-                                <div className="col-span-2 bg-black/50 p-5 rounded-3xl border border-white/5 flex justify-between items-center">
-                                    <div>
-                                        <p className="text-[10px] text-zinc-500 font-black uppercase mb-1">Desnivel Positivo</p>
-                                        <p className="text-xl font-black italic font-mono text-emerald-400 leading-none">+{w.elevation || '0'}m</p>
+                                {!isGym && (
+                                    <div className="bg-black/50 p-5 rounded-3xl border border-white/5">
+                                        <Icon name="zap" size={16} className="text-orange-500 mb-2" />
+                                        <p className="text-2xl font-black italic font-mono text-orange-400 leading-none">{w.pace || '--'}</p>
+                                        <p className="text-[8px] text-zinc-500 font-black uppercase mt-1">Ritmo (Min/Km)</p>
                                     </div>
-                                    <Icon name="mountain" size={24} className="text-emerald-500/50" />
+                                )}
+                                <div className={`bg-black/50 p-5 rounded-3xl border border-white/5 flex justify-between items-center ${isGym ? 'col-span-2' : 'col-span-2'}`}>
+                                    <div>
+                                        <p className="text-[10px] text-zinc-500 font-black uppercase mb-1">{isGym ? 'Calorías Activas' : 'Desnivel Positivo'}</p>
+                                        <p className="text-xl font-black italic font-mono text-emerald-400 leading-none">
+                                            {isGym ? `${w.calories || '0'} kcal` : `+${w.elevation || '0'}m`}
+                                        </p>
+                                    </div>
+                                    <Icon name={isGym ? "flame" : "mountain"} size={24} className="text-emerald-500/50" />
                                 </div>
                             </div>
                         </div>
@@ -539,20 +566,19 @@
                         </div>
                         
                         <div className="flex items-center gap-3">
-                            {!session && (
-                                <button 
-                                    onClick={linkAccount} 
-                                    className="text-[8px] font-black text-orange-500 uppercase border border-orange-500/30 px-3 py-1.5 rounded-full hover:bg-orange-500/10 transition-colors"
-                                >
-                                    Vincular Strava
-                                </button>
-                            )}
+                            <button 
+                                onClick={linkAccount}
+                                className="p-2 rounded-xl bg-zinc-900 border border-white/5 text-zinc-500 hover:text-white transition-all active:scale-90"
+                                title="Re-vincular Strava (Para arreglar permisos)"
+                            >
+                                <Icon name="link" size={16} />
+                            </button>
                             <button 
                                 onClick={() => session ? syncWatch() : linkAccount()}
                                 disabled={isSyncing}
-                                className={`p-3 rounded-2xl bg-zinc-900 border border-white/5 transition-all active:scale-90 ${isSyncing ? 'animate-spin text-blue-400' : 'text-zinc-400 hover:text-white'}`}
+                                className={`p-3 rounded-2xl bg-zinc-900 border border-white/5 transition-all active:scale-90 ${isSyncing ? 'animate-spin text-blue-400' : 'text-blue-500 hover:bg-blue-500/10'}`}
                             >
-                                <Icon name={session ? "refresh-cw" : "link"} size={16} />
+                                <Icon name="refresh-cw" size={18} />
                             </button>
                         </div>
                     </header>
