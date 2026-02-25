@@ -4,12 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>OmniForge | Performance OS</title>
+    <!-- Frameworks & Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- PropTypes es REQUERIDO para la versión UMD de Recharts -->
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://cdn.jsdelivr.net/npm/recharts/umd/Recharts.js"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; -webkit-tap-highlight-color: transparent; }
@@ -27,12 +31,17 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
+        // Importación de Firebase (módulos ES desde CDN)
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, query, limit } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
         const { useState, useEffect, useMemo } = React;
-        const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, BarChart, Bar } = Recharts;
+        
+        // Acceso seguro a Recharts desde el objeto global window
+        const { 
+            AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar 
+        } = window.Recharts;
 
         const CONFIG = {
             firebase: {
@@ -95,7 +104,7 @@
 
                 const chartData = last7Days.reverse().map(h => ({
                     name: h.timestamp?.seconds ? new Date(h.timestamp.seconds * 1000).toLocaleDateString('es-ES', {weekday: 'short'}) : 'Hoy',
-                    intensidad: h.type === 'Gym' ? 80 : 65, // Dummy intensity metric if not in data
+                    intensidad: h.type === 'Gym' ? 80 : 65,
                     duracion: parseInt(h.duration) || 45
                 }));
 
@@ -110,7 +119,6 @@
             const syncWatch = () => {
                 setIsSyncing(true);
                 showStatus("Sincronizando con HealthKit & Strava...");
-                // Simulación de delay de red para feedback visual
                 setTimeout(() => {
                     setIsSyncing(false);
                     showStatus("✅ Datos actualizados desde tu Apple Watch.");
@@ -119,7 +127,6 @@
 
             const renderHub = () => (
                 <div className="space-y-6 animate-slide">
-                    {/* Tarjeta Principal de Carga */}
                     <section className="glass p-8 rounded-[2.5rem] border-blue-500/20 shadow-2xl overflow-hidden relative">
                         <div className="absolute top-0 right-0 p-6 opacity-10">
                             <Icon name="zap" size={120} />
@@ -137,7 +144,6 @@
                         </div>
                     </section>
 
-                    {/* Grid de Sesiones */}
                     <div className="grid grid-cols-2 gap-4">
                         <div className="glass p-6 rounded-[2rem] border-orange-500/20">
                             <Icon name="flame" className="text-orange-500 mb-3" />
@@ -151,7 +157,6 @@
                         </div>
                     </div>
 
-                    {/* Actividades Rápidas */}
                     <section className="space-y-4">
                         <div className="flex justify-between items-center px-2">
                             <h3 className="text-[10px] font-black uppercase text-zinc-600 tracking-[0.4em] italic">Timeline Reciente</h3>
