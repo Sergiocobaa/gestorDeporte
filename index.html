@@ -73,10 +73,23 @@
             const [activeTab, setActiveTab] = useState('hub');
             const [status, setStatus] = useState(null);
             const [isSyncing, setIsSyncing] = useState(false);
+            const [errorCount, setErrorCount] = useState(0);
+
+            // Estado de sesión de Strava persistente
+            const [session, setSession] = useState(() => {
+                const saved = localStorage.getItem('strava_session');
+                return saved ? JSON.parse(saved) : null;
+            });
 
             useEffect(() => {
                 signInAnonymously(auth);
                 const unsubAuth = onAuthStateChanged(auth, setUser);
+
+                // Detectar código OAuth en la URL al volver de Strava
+                const urlParams = new URLSearchParams(window.location.search);
+                const code = urlParams.get('code');
+                if (code) exchangeOAuthCode(code);
+
                 return () => unsubAuth();
             }, []);
 
@@ -92,6 +105,134 @@
             const showStatus = (msg) => {
                 setStatus(msg);
                 setTimeout(() => setStatus(null), 5000);
+            };
+
+            // --- LÓGICA DE SINCRONIZACIÓN REAL DE STRAVA ---
+            const exchangeOAuthCode = async (code) => {
+                setIsSyncing(true);
+                try {
+                    const res = await fetch('https://www.strava.com/oauth/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            client_id: CONFIG.strava.clientId,
+                            client_secret: CONFIG.strava.clientSecret,
+                            code: code,
+                            grant_type: 'authorization_code'
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.access_token) {
+                        localStorage.setItem('strava_session', JSON.stringify(data));
+                        setSession(data);
+                        showStatus("✅ Conexión establecida. Ya puedes sincronizar.");
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                        syncWatch(data.access_token); // Auto-sync on link
+                    }
+                } catch (e) { showStatus("❌ Error en el intercambio de tokens."); }
+                finally { setIsSyncing(false); }
+            };
+
+            const refreshStravaToken = async () => {
+                if (!session?.refresh_token) return null;
+                try {
+                    const res = await fetch('https://www.strava.com/oauth/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            client_id: CONFIG.strava.clientId,
+                            client_secret: CONFIG.strava.clientSecret,
+                            refresh_token: session.refresh_token,
+                            grant_type: 'refresh_token'
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.access_token) {
+                        const newSession = { ...session, access_token: data.access_token, refresh_token: data.refresh_token };
+                        localStorage.setItem('strava_session', JSON.stringify(newSession));
+                        setSession(newSession);
+                        return data.access_token;
+                    }
+                } catch (e) { console.error("Refresh failed", e); }
+                return null;
+            };
+
+            const linkAccount = () => {
+                const redirect = window.location.href.split('?')[0];
+                window.location.href = `https://www.strava.com/oauth/authorize?client_id=${CONFIG.strava.clientId}&response_type=code&redirect_uri=${redirect}&approval_prompt=force&scope=read,activity:read_all`;
+            };
+
+            const syncWatch = async (tokenOverride = null) => {
+                if (!user || isSyncing) return;
+                if (!session && !tokenOverride) {
+                    linkAccount();
+                    return;
+                }
+
+                if (errorCount > 2) {
+                    showStatus("⚠️ Límite de errores. Espera 15 min o re-vincula.");
+                    return;
+                }
+
+                setIsSyncing(true);
+                showStatus("⏳ Extrayendo datos del Watch...");
+
+                try {
+                    let currentToken = tokenOverride || session.access_token;
+                    let res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=15', {
+                        headers: { 'Authorization': `Bearer ${currentToken}` }
+                    });
+
+                    if (res.status === 401) {
+                        const newToken = await refreshStravaToken();
+                        if (!newToken) {
+                            showStatus("❌ Sesión expirada. Por favor, re-vincula.");
+                            setSession(null);
+                            localStorage.removeItem('strava_session');
+                            setErrorCount(prev => prev + 1);
+                            setIsSyncing(false);
+                            return;
+                        }
+                        res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=15', {
+                            headers: { 'Authorization': `Bearer ${newToken}` }
+                        });
+                    }
+
+                    if (res.status === 429) {
+                        showStatus("🚨 Límite de Strava alcanzado. Espera 15 min.");
+                        setErrorCount(5);
+                        setIsSyncing(false);
+                        return;
+                    }
+
+                    const data = await res.json();
+                    if (!Array.isArray(data)) throw new Error("Invalid format");
+
+                    let added = 0;
+                    for (const act of data) {
+                        if (!history.find(h => h.stravaId === act.id)) {
+                            await addDoc(collection(db, "artifacts", "gestordeportes-36ba3", "users", user.uid, "history"), {
+                                name: act.name,
+                                type: act.type,
+                                stravaId: act.id,
+                                distance: (act.distance / 1000).toFixed(2),
+                                duration: Math.floor(act.moving_time / 60),
+                                calories: act.kilojoules ? Math.floor(act.kilojoules * 0.239) : 0,
+                                timestamp: serverTimestamp(),
+                                source: 'Apple Watch'
+                            });
+                            added++;
+                        }
+                    }
+                    setErrorCount(0);
+                    showStatus(added > 0 ? `🔥 ${added} nuevas actividades!` : "✅ Timeline sincronizado.");
+                } catch (e) {
+                    console.error(e);
+                    setErrorCount(prev => prev + 1);
+                    showStatus("❌ Fallo en la conexión con Strava.");
+                } finally {
+                    setIsSyncing(false);
+                }
             };
 
             // Estadísticas calculadas
@@ -115,15 +256,6 @@
                     chartData
                 };
             }, [history]);
-
-            const syncWatch = () => {
-                setIsSyncing(true);
-                showStatus("Sincronizando con HealthKit & Strava...");
-                setTimeout(() => {
-                    setIsSyncing(false);
-                    showStatus("✅ Datos actualizados desde tu Apple Watch.");
-                }, 2000);
-            };
 
             const renderHub = () => (
                 <div className="space-y-6 animate-slide">
@@ -293,13 +425,25 @@
                             <h1 className="text-2xl font-black italic tracking-tighter uppercase leading-none">Omni<span className="text-blue-500">Forge</span></h1>
                             <p className="text-[8px] text-zinc-600 font-bold uppercase tracking-[0.3em] mt-1">Intelligence Module</p>
                         </div>
-                        <button 
-                            onClick={syncWatch}
-                            disabled={isSyncing}
-                            className={`p-3 rounded-2xl bg-zinc-900 border border-white/5 transition-all active:scale-90 ${isSyncing ? 'animate-spin' : ''}`}
-                        >
-                            <Icon name="refresh-cw" size={16} className="text-zinc-400" />
-                        </button>
+                        
+                        {/* Control no estorbo de sincronización */}
+                        <div className="flex items-center gap-3">
+                            {!session && (
+                                <button 
+                                    onClick={linkAccount} 
+                                    className="text-[8px] font-black text-orange-500 uppercase border border-orange-500/30 px-3 py-1.5 rounded-full hover:bg-orange-500/10 transition-colors"
+                                >
+                                    Vincular Strava
+                                </button>
+                            )}
+                            <button 
+                                onClick={() => session ? syncWatch() : linkAccount()}
+                                disabled={isSyncing}
+                                className={`p-3 rounded-2xl bg-zinc-900 border border-white/5 transition-all active:scale-90 ${isSyncing ? 'animate-spin text-blue-400' : 'text-zinc-400 hover:text-white'}`}
+                            >
+                                <Icon name={session ? "refresh-cw" : "link"} size={16} />
+                            </button>
+                        </div>
                     </header>
 
                     <main className="p-6">
