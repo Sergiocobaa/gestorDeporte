@@ -183,6 +183,7 @@
                         headers: { 'Authorization': `Bearer ${currentToken}` }
                     });
 
+                    // Si falla el token original, intentamos refrescar
                     if (res.status === 401) {
                         const newToken = await refreshStravaToken();
                         if (!newToken) {
@@ -193,9 +194,17 @@
                             setIsSyncing(false);
                             return;
                         }
+                        // Usamos el nuevo token refrescado
                         res = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=15', {
                             headers: { 'Authorization': `Bearer ${newToken}` }
                         });
+                    }
+
+                    // Si AUN así da 401, el problema es el SCOPE (permisos insuficientes)
+                    if (res.status === 401) {
+                        setSession(null);
+                        localStorage.removeItem('strava_session');
+                        throw new Error("SCOPE_INSUFFICIENT");
                     }
 
                     if (res.status === 429) {
@@ -206,7 +215,11 @@
                     }
 
                     const data = await res.json();
-                    if (!Array.isArray(data)) throw new Error("Invalid format");
+                    
+                    // Si la respuesta no es un array, Strava envió un JSON de error
+                    if (!Array.isArray(data)) {
+                        throw new Error(data.message || "Invalid format");
+                    }
 
                     let added = 0;
                     for (const act of data) {
@@ -227,9 +240,14 @@
                     setErrorCount(0);
                     showStatus(added > 0 ? `🔥 ${added} nuevas actividades!` : "✅ Timeline sincronizado.");
                 } catch (e) {
-                    console.error(e);
+                    console.error("Sync Error:", e);
                     setErrorCount(prev => prev + 1);
-                    showStatus("❌ Fallo en la conexión con Strava.");
+                    
+                    if (e.message === "SCOPE_INSUFFICIENT" || e.message.includes("Authorization Error")) {
+                        showStatus("❌ Permisos denegados. Debes MARCAR la casilla de actividades al vincular.");
+                    } else {
+                        showStatus("❌ Fallo en la conexión con Strava.");
+                    }
                 } finally {
                     setIsSyncing(false);
                 }
